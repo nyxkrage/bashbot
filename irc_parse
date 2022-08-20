@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -emuo pipefail
+source .env
+
+twitch_message() {
+    USER=$(echo $MESSAGE | cut -d' ' -f2 | tr -d '@')
+    ARGS=$(echo $MESSAGE | cut -d' ' -f2-)
+    MSG=$(echo $@ | sed "s/%USER%/${USER:-}/")
+    echo $MSG
+    log "(TWITCH): PRIVMSG #$CHANNEL :$MSG \r\n"
+    echo -e "PRIVMSG #$CHANNEL :$MSG \r\n" >> ircin
+    unset MSG
+    unset USER
+    unset ARGS
+}
+
+log() {
+    echo "[$(date +%N)]: $@" >> irc.log
+}
+
+echo '' > irc.log
+
+while read -r IRC_MESSAGE; do
+    #echo $IRC_MESSAGE >> irc.log
+    IRC_MESSAGE=$(echo "$IRC_MESSAGE" | tr -s ' ')
+    PARTS=$(echo "$IRC_MESSAGE" | tr ' ' '\n')
+    declare -A TAGS
+    i=2
+    # TODO: Rewrite to use IFS, to avoid PARTS variable
+    for PART in $PARTS; do
+        case $PART in
+            @*)
+                # Convert Tags to associated array
+                # TODO: Rewrite to use IFS, to avoid TMP variable
+                TMP=$(echo "${PART:1}" | tr ';' '\n')
+                for TAG in $TMP; do
+                    KEY=$(echo "$TAG" | cut -d'=' -f1)
+                    VALUE=$(echo "$TAG" | cut -d'=' -f2-) # | tr '\\:' ';' | tr '\\\\' '\\' | tr '\\r' '\r' | tr '\\n' '\n')
+                    if [[ "$KEY" == "badges" ]]; then
+                        VALUE=$(echo "$VALUE" | sed 's#/[0-9]\+##g')
+                    fi
+                    TAGS+=([$KEY]=$VALUE)
+                done
+                ((i+=1))
+                unset TMP
+                unset KEY
+                unset VALUE
+                ;;
+            :*)
+                SOURCE=${PART:1}
+                ((i+=1))
+                ;;
+            *)
+                if [[ -z ${COMMAND:-} ]]; then
+                    COMMAND=$PART;
+                else
+                    PARAMS=$(echo "$IRC_MESSAGE" | cut -d' ' -f"${i}"-)
+                    unset i
+                    break
+                fi
+                ;;
+        esac
+    done
+    #echo "TAGS" >> irc.log
+    #for KEY in "${!TAGS[@]}"; do
+    #    echo "$KEY : ${TAGS[${KEY}]}" >> irc.log
+    #done
+    #echo "SOURCE ${SOURCE:-}" >> irc.log
+    #echo "COMMAND $COMMAND" >> irc.log
+    #echo "PARAMS $PARAMS" >> irc.log
+    case $COMMAND in
+        "PING")
+            echo -e "PONG ${PARAMS:-}" >> ircin
+            ;;
+        "PRIVMSG")
+            # CHECK DESTINATION MATCH
+            echo "TAGS" >> irc.log
+            for KEY in "${!TAGS[@]}"; do
+                echo "$KEY : ${TAGS[${KEY}]}" >> irc.log
+            done
+            echo "SOURCE ${SOURCE:-}" >> irc.log
+            echo "COMMAND $COMMAND" >> irc.log
+            echo "PARAMS $PARAMS" >> irc.log
+            DESTINATION=$(echo "$PARAMS" | cut -d' ' -f1 | tail -c +2)
+            MESSAGE=$(echo "$PARAMS" | cut -d' ' -f2- | tail -c +2 | tr -d '\r')
+            if [[ "$DESTINATION" == "$CHANNEL" ]]; then
+                # HANDLE COMMANDS
+                # IF ITS A COMMAND, STARTS WITH A BANG (!)
+                if [[ "$MESSAGE" == !* ]]; then
+                    unset CMD
+                    log "Got command, checking unprivileged file"
+                    CMD=$(grep "^$(echo "${MESSAGE:1}" | tr '[:upper:]' '[:lower:]' | cut -d' ' -f1):.*$" unpriv.commands | cut -d':' -f2- || true)
+                    if [[ -z "$CMD" ]]; then
+                        log "No unprivileged command, checking badges for mod"
+                        case ",${TAGS[badges]}," in
+                            *,broadcaster,*|*,moderator,*)
+                                log "Is priv'd"
+                                CMD=$(grep "$(echo "${MESSAGE:1}" | tr '[:upper:]' '[:lower:]' | cut -d' ' -f1):.*" priv.commands | cut -d':' -f2- || true)
+                                ;;
+                        esac
+                    fi
+                    if [[ -n "$CMD" ]]; then
+                        twitch_message $CMD
+                    fi
+                    unset CMD
+                fi
+            fi
+            unset DESTINATION
+            unset MESSAGE
+            ;;
+        *)
+            ;;
+    esac
+    unset TAGS
+    unset SOURCE
+    unset COMMAND
+    unset PARAMS
+done

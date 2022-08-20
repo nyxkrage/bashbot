@@ -1,0 +1,32 @@
+#!/bin/bash
+set -emuo pipefail
+export IFS=$'\n\t'
+export PATH="$(pwd):$PATH"
+
+source .env
+
+BOT_PASSWORD="oauth:$TOKEN"
+
+cleanup() {
+    echo "Cleaning up background jobs"
+    echo $(jobs | tr -s ' ' | cut -d' ' -f3-)
+    jobs -p | xargs -I{} kill -- -{}
+    stty echoctl
+    exit
+}
+
+trap cleanup SIGINT
+
+stty -echoctl
+
+rm -f ircin
+mkfifo ircin
+
+# ... | tee /dev/tty | ..., duplicates output to the terminal
+# while still forwarding it to the next pipe
+tail -f ircin | nc irc.chat.twitch.tv 6667 | tee /dev/tty | irc_parse &
+echo "Logging in"
+echo -e "PASS $BOT_PASSWORD \r\nNICK $BOT_USERNAME \r\nCAP REQ twitch.tv/tags \r\nCAP REQ :twitch.tv/commands \r\nJOIN #$CHANNEL\r\n" >> ircin
+echo -e "PRIVMSG #$CHANNEL :Hello Mortals" >> ircin
+
+wait $(jobs -p)
